@@ -1,11 +1,5 @@
-# Rendered outputs
-demo_run_all.html
-demo_run_all_files/
-
 # knitr / rmarkdown cache
-demo_run_all_cache/
 *_cache/
-*_files/
 
 # R session
 .Rhistory
