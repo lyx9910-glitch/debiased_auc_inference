@@ -1,0 +1,21 @@
+1. 你的R文件能不能分成几份？
+    a. Ground Truth -> Rdata
+    b. R x B simulation -> Rdata
+    c. R X B simulation inference + Plot
+    d. Leave one out CV
+    e. Real data
+2. Inference code change: Delong coverage RxB,R (first average over B)
+3. Remove Bootstrap + non-split (no refit model) move out side of B loop
+    a. 如果太花时间，那R -> 200, B -> 200 ~ 500
+    b. 计算一次实验花多少时间. 看一下瓶颈在哪个model
+    c. 如果simply了，甚至可以一个R file只跑一个model。
+4. Simplify code with in B loop
+    a. Use a unified function for both split / non-split. For all models.
+    b. See /Users/tianningxu/Documents/project/yuxuan_auc/simplified_nested_AUC.R
+5. Ground Truth可以固定testing sample size，你现在test和train sample size一样，都等于n1+n2。我的想法是，train可以分两个n1+n2 = 1000+1000 或者750+750，test都是2000
+    a. ground.truth.1 = groud_truth(n1 = 1000, n2 = 1000, R = 10000) —->>
+       ground.truth.1 = groud_truth(n1 = 1000, n2 = 1000, n1_test = 1000, n2_test = 1000, R = 10000)
+    b. ground.truth.2 = groud_truth(n1 = 750, n2 = 750, n1_test = 1000, n2_test = 1000, R = 10000)
+    c. Non split, split 只fit一次
+
+

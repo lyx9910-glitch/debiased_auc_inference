@@ -1,0 +1,245 @@
+---
+title: "Delta AUC Nested Model – Complete Analysis"
+author: "Yuxuan Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: cosmo
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 6)
+```
+
+# Setup
+
+## Load Packages
+
+```{r packages}
+# Determine project root (works in both RStudio and command-line knit)
+script_dir <- tryCatch(
+  dirname(rstudioapi::getActiveDocumentContext()$path),
+  error = function(e) NULL
+)
+if (is.null(script_dir) || script_dir == "") {
+  # When knitting from command line, knitr sets the working directory to
+  # the directory containing the Rmd file.
+  script_dir <- getwd()
+}
+cat("Project directory:", script_dir, "\n")
+
+source(file.path(script_dir, "R", "00_packages.R"))
+```
+
+## Load Function Modules
+
+```{r source-modules}
+source(file.path(script_dir, "R", "01_model_functions.R"))
+source(file.path(script_dir, "R", "02_ground_truth.R"))
+source(file.path(script_dir, "R", "03_simulation_RxB.R"))
+source(file.path(script_dir, "R", "04_inference_viz.R"))
+source(file.path(script_dir, "R", "05_loo_cv.R"))
+source(file.path(script_dir, "R", "06_real_data_ptb.R"))
+source(file.path(script_dir, "R", "07_real_data_heart.R"))
+```
+
+## Simulation Parameters
+
+> **Note:** All simulation sizes (R, B, n) are kept deliberately small so
+> this document renders in a few minutes. For production-quality results,
+> increase `R` to 10 000 for ground truth, `R=50, B=20` for R×B simulation,
+> and restore the full sample sizes (n=2000) – see `demo_run_all.R` for
+> the original values.
+
+```{r params}
+p   <- 100   # number of noise features
+mu  <- 1     # signal mean shift
+sig <- 10    # noise SD
+snr <- (mu - 0)^2 / sig^2
+cat(sprintf("Signal-to-Noise Ratio (SNR) = %.4f\n", snr))
+```
+
+---
+
+# Ground Truth
+
+We estimate the true $\Delta$AUC (full − reduced) via large-scale Monte Carlo
+with independent training and test sets.
+
+## Setting 1: $n_{train} = 500$, $n_{test} = 1000$
+
+```{r ground-truth-1, cache=TRUE}
+# NOTE: R kept small for demo speed. Increase R for production runs.
+ground_truth_1 <- compute_ground_truth(
+  n1 = 250, n2 = 250,
+  n1_test = 500, n2_test = 500,
+  R = 100,
+  p = p, mu = mu, sig = sig,
+  model_types = c("lda", "logistic")
+)
+```
+
+```{r gt1-print}
+cat("Ground truth setting 1 (n_train=500, n_test=1000):\n")
+print(ground_truth_1$ground_truth)
+```
+
+## Setting 2: $n_{train} = 400$, $n_{test} = 1000$
+
+```{r ground-truth-2, cache=TRUE}
+ground_truth_2 <- compute_ground_truth(
+  n1 = 200, n2 = 200,
+  n1_test = 500, n2_test = 500,
+  R = 100,
+  p = p, mu = mu, sig = sig,
+  model_types = c("lda", "logistic")
+)
+```
+
+```{r gt2-print}
+cat("Ground truth setting 2 (n_train=400, n_test=1000):\n")
+print(ground_truth_2$ground_truth)
+```
+
+---
+
+# R × B Simulation
+
+Non-split model is fit **once** per Monte Carlo replicate (deterministic on
+same data). Only the sample-split evaluation is repeated B times.
+A single iteration is timed first so you can tune R and B.
+
+```{r sim-rxb, cache=TRUE}
+# NOTE: R, B kept small for demo speed. Increase for production.
+sim_result <- run_simulation_RxB(
+  n1 = 250, n2 = 250,
+  R  = 10, B = 10,
+  p  = p, mu = mu, sig = sig,
+  test_frac   = 0.25,
+  model_types = c("lda", "logistic"),
+  nrounds     = 100,
+  reduced_formula = "Y ~ X1"
+)
+```
+
+```{r sim-timing}
+cat(sprintf("Single iteration time : %.2f sec\n", sim_result$time_single))
+cat(sprintf("Total simulation time : %.1f sec (%.1f min)\n",
+            sim_result$time_total, sim_result$time_total / 60))
+```
+
+---
+
+# Inference & Visualization
+
+Inference is computed over all **R × B** split samples (pooled).
+Coverage rates are computed against ground truth setting 1.
+
+```{r inference}
+inference <- compute_inference(sim_result,
+                               ground_truth = ground_truth_1$ground_truth)
+print_inference_summary(inference)
+```
+
+## AUC Difference Histograms
+
+```{r hist-auc, fig.height=10}
+plot_auc_histograms(sim_result, xlim_range = c(-0.15, 0.15))
+```
+
+---
+
+# Leave-One-Out Cross Validation
+
+LOO-CV simulation for LDA and Logistic regression.
+Each Monte Carlo replicate generates fresh data; non-split and LOO results
+are both deterministic for a given dataset.
+
+```{r loo-cv, cache=TRUE}
+# NOTE: R kept small for demo. LOO-CV is expensive (refits per observation).
+loo_result <- run_loo_cv_simulation(
+  n1 = 100, n2 = 100,
+  R  = 3,
+  p  = p, mu = mu, sig = sig,
+  reduced_formula = "Y ~ X1"
+)
+```
+
+```{r loo-summary}
+print_loo_summary(loo_result)
+```
+
+## LOO-CV Histograms
+
+```{r loo-hist}
+plot_loo_histograms(loo_result)
+```
+
+---
+
+# Real Data Application – Preterm Birth
+
+Uses the `ptb` dataset from the **SELR** package.
+
+- **Scenario 1**: Full model (all features + interactions) vs reduced model.
+- **Scenario 2**: HC-only features vs base model.
+
+Non-split results are computed once; split results repeated R times.
+
+```{r ptb-analysis, cache=TRUE}
+if (exists("ptb")) {
+  ptb_result <- run_ptb_analysis(
+    R = 50,
+    model_types = c("lda", "logistic"),
+    nrounds = 100
+  )
+} else {
+  cat("PTB dataset not found. Skipping.\n")
+  cat("Make sure the SELR package is installed and loaded.\n")
+  ptb_result <- NULL
+}
+```
+
+```{r ptb-summary}
+if (!is.null(ptb_result)) {
+  print_ptb_summary(ptb_result)
+}
+```
+
+---
+
+# Real Data Application – Framingham Heart Study
+
+Uses the `framingham` dataset from the **riskCommunicator** package.
+
+- Full model: `Y ~ BMI + SYSBP + DIABP + TOTCHOL + AGE`
+- Reduced model: `Y ~ BMI + SYSBP + DIABP + TOTCHOL` (drops AGE)
+
+```{r heart-analysis, cache=TRUE}
+if (exists("framingham")) {
+  heart_result <- run_heart_analysis(R = 50)
+} else {
+  cat("Framingham dataset not found. Skipping.\n")
+  cat("Make sure the riskCommunicator package is installed and loaded.\n")
+  heart_result <- NULL
+}
+```
+
+```{r heart-summary, fig.height=5}
+if (!is.null(heart_result)) {
+  print_heart_summary(heart_result)
+}
+```
+
+---
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
